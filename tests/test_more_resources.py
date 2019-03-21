@@ -32,6 +32,13 @@ from aliyunsdkecs.request.v20140526.DescribeVpcsRequest import DescribeVpcsReque
 from aliyunsdkrds.request.v20140815.DescribeDBInstancesRequest import DescribeDBInstancesRequest
 from tests.base import SDKTestBase
 
+def resources_request(response, key1, key2):
+    response_list = list()
+    for x in response[key1][key2]:
+        for y in x.values():
+            response_list.append(y)
+    return response_list
+
 
 class MockResponseTest(SDKTestBase):
 
@@ -88,103 +95,102 @@ class MockResponseTest(SDKTestBase):
 
     def test_vpc_eip_address(self):
         vpc = self._get_resource("vpc")
-        # Loop to delete the ecs instance
+    #     # Loop to delete the ecs instance
         ecs = self._get_resource("ecs")
-        for instance in list(ecs.instances.all()):
+        # Let the product SDK stop smoothly
+        for instance in ecs.instances.filter(Status='Running').page_size(100):
+            instance.refresh()
+            print(instance.instance_id)
+        print(len(list(ecs.instances.filter(Status='Running').page_size(100))))
+        # time.sleep(30)
+        for instance in list(ecs.instances.all().page_size(100)):
             if instance.status == 'Stopped':
                 instance.delete()
-
+        # Let the product SDK delete smoothly
+        time.sleep(30)
         # Loop delete EIP
-        for eip in vpc.eip_addresses.all():
+        for eip in vpc.eip_addresses.all().page_size(100):
             eip.release()
-
-        describe_vswitches_request = DescribeVSwitchesRequest()
-        describe_vswitches_response = self.client.do_action_with_exception(describe_vswitches_request)
-        describe_vswitches_response = json.loads(describe_vswitches_response.decode("utf-8"), encoding="utf-8")
-        print(describe_vswitches_response)
 
         # Loop deletion switch
         slb = self._get_resource("slb")
+        describe_vswitches_request = DescribeVSwitchesRequest()
+        describe_vswitches_request.set_PageSize(50)
+        describe_vswitches_response = self.client.do_action_with_exception(describe_vswitches_request)
+        describe_vswitches_response = json.loads(describe_vswitches_response.decode("utf-8"), encoding="utf-8")
+
         describe_db_instance_request = DescribeDBInstancesRequest()
+        describe_db_instance_request.set_PageSize(50)
+        describe_db_instance_response = self.client.do_action_with_exception(describe_db_instance_request)
+        describe_db_instance_response = json.loads(describe_db_instance_response.decode("utf-8"), encoding="utf-8")
         for vswitch in describe_vswitches_response["VSwitches"]["VSwitch"]:
             # Determine if the ecs depends on the switch
-            for instance in ecs.instances.filter(VSwitchId=vswitch["VSwitchId"]):
-                if instance is not None:
-                    break
-            # Determine whether RDS depends on the switch
-            # describe_db_instance_request.set_VSwitchId(vswitch["VSwitchId"])
-            describe_db_instance_response = self.client.do_action_with_exception(describe_db_instance_request)
-            describe_db_instance_response = json.loads(describe_db_instance_response.decode("utf-8"), encoding="utf-8")
-            print(describe_db_instance_response)
-            for vswitches in describe_db_instance_response["Items"]["DBInstance"]:
-                if vswitch["VSwitchId"] == vswitches["VSwitchId"]:
-                    break
+            if len(list(ecs.instances.filter(VSwitchId=vswitch["VSwitchId"]).page_size(100))) == 0:
+                # Determine whether RDS depends on the switch
+                if vswitch["VSwitchId"] not in resources_request(describe_db_instance_response, "Items", "DBInstance"):
+                    # Determine if the load balancer is dependent on the switch
+                    if len(list(slb.load_balancers.filter(VSwitchId=vswitch["VSwitchId"]).page_size(100))) == 0:
+                        if vswitch["Status"] == "Available":
+                            delete_vswitches_request = DeleteVSwitchRequest()
+                            delete_vswitches_request.set_VSwitchId(vswitch["VSwitchId"])
 
-            # Determine if the load balancer is dependent on the switch
-            for load_balancer in slb.load_balancers.filter(VSwitchId=vswitch["VSwitchId"]):
-                continue
-            print(vswitch["VSwitchId"])
-            if vswitch["Status"] == "Available":
-                delete_vswitches_request = DeleteVSwitchRequest()
-                delete_vswitches_request.set_VSwitchId(vswitch["VSwitchId"])
-                delete_vswitches_response = self.client.do_action_with_exception(delete_vswitches_request)
+        # Looping the security group
+        DescribeInstancesRequest()
+        describe_security_groups_request = DescribeSecurityGroupsRequest()
+        describe_security_groups_request.set_PageSize(50)
+        describe_security_groups_response = self.client.do_action_with_exception(describe_security_groups_request)
+        describe_security_groups_response = json.loads(describe_security_groups_response.decode("utf-8"), encoding="utf-8")
+        group_list = describe_security_groups_response["SecurityGroups"]["SecurityGroup"]
+        for security_group in group_list:
+            collections = ecs.instances.filter(SecurityGroupId=security_group["SecurityGroupId"]).page_size(100)
+            # collections= ecs.instances.filter(SecurityGroupId="sg-i-bp17add25vlwt2pdehlr").page_size(100)
+
+            # print(len(list(ecs.instances.filter(SecurityGroupId="sg-i-bp17add25vlwt2pdehlr").page_size(100))))
+            #
+            # print(len(list(ecs.instances.filter(VpcId="vpc-bp1p2w6vzg6plnsek0mxe").page_size(100))))
+            # # collections = ecs.instances.all()
+            # print(len(list(collections)))
+            if len(list(collections)) == 0:
+                delete_security_groups_request = DeleteSecurityGroupRequest()
+                delete_security_groups_request.set_SecurityGroupId(security_group["SecurityGroupId"])
+                delete_security_groups_response = self.client.do_action_with_exception(delete_security_groups_request)
 
         # Loop delete VPC
         describe_vpc_request = DescribeVpcsRequest()
-        describe_vpc_request.set_IsDefault(True)
+        describe_vpc_request.set_PageSize(50)
         describe_vpc_response = self.client.do_action_with_exception(describe_vpc_request)
         describe_vpc_response = json.loads(describe_vpc_response.decode("utf-8"), encoding="utf-8")
-
-        print(describe_vpc_response)
-        describe_db_instance_request = DescribeDBInstancesRequest()
         describe_nat_gateway_request = DescribeNatGatewaysRequest()
-        describe_security_groups_request = DescribeSecurityGroupsRequest()
-        # describe_router_interfaces_request = DescribeRouterInterfacesRequest()
-        for vpc in describe_vpc_response["Vpcs"]["Vpc"]:
+        describe_nat_gateway_request.set_PageSize(50)
+        describe_nat_gateway_response = self.client.do_action_with_exception(describe_nat_gateway_request)
+        describe_nat_gateway_response = json.loads(describe_nat_gateway_response.decode("utf-8"), encoding="utf-8")
+        router_interfaces_request = DescribeRouterInterfacesRequest()
+        router_interfaces_request.set_PageSize(50)
+        router_interfaces_reqsponse = self.client.do_action_with_exception(router_interfaces_request)
+        router_interfaces_reqsponse = json.loads(router_interfaces_reqsponse.decode("utf-8"), encoding="utf-8")
+
+        for vpcs in describe_vpc_response["Vpcs"]["Vpc"]:
+            print("0000000000000")
             # Determine if the ecs depends on the vpc
-            for instance in ecs.instances.filter(VpcId=vpc["VpcId"]):
-                continue
-            # Determine if the RDS depends on the vpc
-            describe_db_instance_request.set_VpcId(vpc["VpcId"])
-            if self.client.do_action_with_exception(describe_db_instance_request):
-                continue
-            # Determine if the switch depends on the vpc
-            describe_vswitches_request.set_VpcId(vpc["VpcId"])
-            if self.client.do_action_with_exception(describe_vswitches_request):
-                continue
-            # Determine if the NAT depends on the vpc
-            describe_nat_gateway_request.set_VpcId(vpc["VpcId"])
-            if self.client.do_action_with_exception(describe_nat_gateway_request):
-                continue
-            # Determine whether the security group depends on VPC
-            describe_security_groups_request.set_VpcId(vpc["VpcId"])
-            if self.client.do_action_with_exception(describe_security_groups_request):
-                continue
-            # Determine if the load balancer is dependent on the vpc
-            for load_balancer in slb.load_balancers.filter(vpc["VpcId"]):
-                continue
-
-            if vpc["Status"] == "Available":
-                delete_vpc_request = DeleteVpcRequest()
-                delete_vpc_request.set_VpcId(vpc["VpcId"])
-                delete_vpc_response = self.client.do_action_with_exception(delete_vpc_request)
-                delete_vpc_response = json.loads(delete_vpc_response.decode("utf-8"), encoding="utf-8")
-
-        # # Looping the security group
-        # describe_security_groups_request = DescribeSecurityGroupsRequest()
-        # describe_security_groups_response = self.client.do_action_with_exception(describe_security_groups_request)
-        # describe_security_groups_response = json.loads(describe_security_groups_response.decode("utf-8"), encoding="utf-8")
-        # print("daqwde"*30)
-        # print(describe_security_groups_response)
-        # for security_group in describe_security_groups_response["SecurityGroups"]["SecurityGroup"]:
-        #     # if security_group.get("Instances") != None:
-        #     # print(security_group["SecurityGroupId"])
-        #     delete_security_groups_request = DeleteSecurityGroupRequest()
-        #     delete_security_groups_request.set_SecurityGroupId(security_group["SecurityGroupId"])
-        #     delete_security_groups_response = self.client.do_action_with_exception(delete_security_groups_request)
-        #     response = json.loads(delete_security_groups_response.decode("utf-8"), encoding="utf-8")
-        #     print(response.get("RequestId"))
-        # print("*"*20)
+            if len(list(ecs.instances.filter(VpcId=vpcs["VpcId"]).page_size(100))) == 0:
+                # Determine if the RDS depends on the vpc
+                if vpcs["VpcId"] not in resources_request(describe_db_instance_response, "Items", "DBInstance"):
+                    print("1111111111")
+                    # Determine if the switch depends on the vpc
+                    if vpcs["VpcId"] not in resources_request(describe_vswitches_response,"VSwitches", "VSwitch"):
+                        # Determine if the NAT depends on the vpc
+                        if vpcs["VpcId"] not in resources_request(describe_nat_gateway_response,"NatGateways", "NatGateway"):
+                            # Determine whether the security group depends on VPC
+                            if vpcs["VpcId"] not in resources_request(describe_security_groups_response, "SecurityGroups", "SecurityGroup"):
+                                # Determine whether the RouterInterfaces depends on VPC
+                                if vpcs["VpcId"] not in resources_request(router_interfaces_reqsponse,"RouterInterfaceSet", "RouterInterfaceType"):
+                                    print("222222222222222")
+                                    # Determine if the load balancer is dependent on the vpc
+                                    if len(list(slb.load_balancers.filter(VpcId=vpcs["VpcId"]).page_size(100))) == 0:
+                                        if vpcs["Status"] == "Available":
+                                            delete_vpc_request = DeleteVpcRequest()
+                                            delete_vpc_request.set_VpcId(vpcs["VpcId"])
+                                            delete_vpc_response = self.client.do_action_with_exception(delete_vpc_request)
 
         # Create a VPC
         request = CreateVpcRequest()
